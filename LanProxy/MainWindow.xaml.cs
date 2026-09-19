@@ -1,9 +1,13 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.IO;
+using System.Management;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Threading;
 using LanProxy.Proxy;
 using OxyPlot;
@@ -15,10 +19,13 @@ public partial class MainWindow : Window
 {
     private readonly ProxyServer _server = new();
     private readonly ObservableCollection<ClientSession> _clientList = new();
-    private readonly List<IPAddress> _ipList = new();
+    private readonly ObservableCollection<AdapterItem> _adapterList = new();
     private readonly DispatcherTimer _timer;
     private readonly bool _autoStart;
     private readonly string? _logFile;
+
+    private System.Windows.Forms.NotifyIcon? _notifyIcon;
+    private bool _allowClose;
 
     private readonly PlotModel _plotModel;
     private readonly LineSeries _upSeries;
@@ -55,6 +62,7 @@ public partial class MainWindow : Window
         PlotTraffic.Model = _plotModel;
 
         GridClients.ItemsSource = _clientList;
+        CboAdapter.ItemsSource = _adapterList;
 
         LoadAdapters();
 
@@ -93,43 +101,108 @@ public partial class MainWindow : Window
 
     private void LoadAdapters()
     {
-        CboAdapter.Items.Clear();
-        _ipList.Clear();
+        _adapterList.Clear();
         // 首选：自动（监听所有网卡，最稳妥）
-        _ipList.Add(IPAddress.Any);
-        CboAdapter.Items.Add("自动（所有网卡 0.0.0.0）");
-        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+        _adapterList.Add(new AdapterItem
         {
-            if (ni.OperationalStatus != OperationalStatus.Up) continue;
-            if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
-            foreach (var ip in ni.GetIPProperties().UnicastAddresses)
+            Display = "自动（所有网卡 0.0.0.0）",
+            SubLine = "监听全部网卡，局域网设备任选本机 IP 接入",
+            Ip = IPAddress.Any,
+            IsUp = true
+        });
+
+        // GUID -> NetworkInterface 映射（用于取 IPv4）
+        var nicByGuid = new Dictionary<string, NetworkInterface>();
+        foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            nicByGuid[ni.Id.ToUpper()] = ni;
+
+        // 与系统「网络连接」面板(ncpa.cpl)一致：只列出 NetConnectionID 非空的适配器
+        var items = new List<(string connId, string desc, bool up, IPAddress? ip)>();
+        using (var searcher = new ManagementObjectSearcher(
+                   "SELECT NetConnectionID, Name, GUID, NetConnectionStatus FROM Win32_NetworkAdapter WHERE NetConnectionID IS NOT NULL"))
+        {
+            foreach (ManagementObject mo in searcher.Get())
             {
-                if (ip.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip.Address))
+                string connId = mo["NetConnectionID"]?.ToString() ?? "";
+                string desc = mo["Name"]?.ToString() ?? connId;
+                string? guid = mo["GUID"]?.ToString();
+                bool up = Convert.ToInt32(mo["NetConnectionStatus"] ?? 0) == 2;
+
+                IPAddress? ip = null;
+                if (guid != null && nicByGuid.TryGetValue(guid.ToUpper(), out var ni))
                 {
-                    _ipList.Add(ip.Address);
-                    CboAdapter.Items.Add($"{ni.Name}  ({ip.Address})");
-                    break; // 每个网卡取一个 IPv4
+                    foreach (var a in ni.GetIPProperties().UnicastAddresses)
+                    {
+                        if (a.Address.AddressFamily == AddressFamily.InterNetwork
+                            && !IPAddress.IsLoopback(a.Address)
+                            && !a.Address.ToString().StartsWith("169.254."))
+                        {
+                            ip = a.Address;
+                            break;
+                        }
+                    }
                 }
+                items.Add((connId, desc, up, ip));
             }
+        }
+
+        // 已连接在前、未连接在后；真实网卡在前、虚拟在后
+        var ordered = items
+            .OrderByDescending(x => x.up)
+            .ThenBy(x => IsVirtualAdapter(x.desc) ? 1 : 0)
+            .ToList();
+
+        foreach (var (connId, desc, up, ip) in ordered)
+        {
+            string tag = IsVirtualAdapter(desc) ? "（虚拟）" : "";
+            string sub = up
+                ? (ip != null ? $"{desc}{tag}  ·  {ip}" : $"{desc}{tag}  ·  无可用 IPv4")
+                : $"{desc}{tag}  ·  未连接";
+            _adapterList.Add(new AdapterItem
+            {
+                Display = connId,
+                SubLine = sub,
+                Ip = ip,
+                IsUp = up
+            });
         }
         CboAdapter.SelectedIndex = 0;
     }
 
-    private string GetSelectedIp()
+    /// <summary>识别明显的虚拟/特殊适配器</summary>
+    private static bool IsVirtualAdapter(string desc)
     {
-        if (CboAdapter.SelectedIndex >= 0 && CboAdapter.SelectedIndex < _ipList.Count)
-            return _ipList[CboAdapter.SelectedIndex].ToString();
+        var text = desc.ToLowerInvariant();
+        string[] keys =
+        {
+            "vmware", "virtualbox", "virtual", "hyper-v", "vethernet", "wsl",
+            "bluetooth", "wi-fi direct", "hosted network", "tap", "tun",
+            "hamachi", "zerotier", "vpn", "ndis", "virtual adapter",
+            "host-only", "loopback", "tunnel", "security tunnel"
+        };
+        foreach (var k in keys)
+            if (text.Contains(k)) return true;
+        return false;
+    }
+
+    /// <summary>当前选中网卡的可监听 IP；null = 未连接且无 IP</summary>
+    private string? GetSelectedIp()
+    {
+        if (CboAdapter.SelectedIndex >= 0 && CboAdapter.SelectedIndex < _adapterList.Count)
+            return _adapterList[CboAdapter.SelectedIndex].Ip?.ToString();
         return "0.0.0.0";
     }
 
     /// <summary>复制/展示用的局域网可达 IP（选中“自动”时取第一个实际 IP）</summary>
     private string GetLanIp()
     {
-        var ip = GetSelectedIp();
-        if (ip != "0.0.0.0") return ip;
-        foreach (var a in _ipList)
-            if (!a.Equals(IPAddress.Any) && !IPAddress.IsLoopback(a))
-                return a.ToString();
+        var sel = CboAdapter.SelectedIndex >= 0 && CboAdapter.SelectedIndex < _adapterList.Count
+            ? _adapterList[CboAdapter.SelectedIndex] : null;
+        if (sel?.Ip != null && !sel.Ip.Equals(IPAddress.Any) && !IPAddress.IsLoopback(sel.Ip))
+            return sel.Ip.ToString();
+        foreach (var a in _adapterList)
+            if (a.Ip != null && !a.Ip.Equals(IPAddress.Any) && !IPAddress.IsLoopback(a.Ip))
+                return a.Ip.ToString();
         return "127.0.0.1";
     }
 
@@ -137,10 +210,18 @@ public partial class MainWindow : Window
 
     private void BtnCopy_Click(object sender, RoutedEventArgs e)
     {
-        var ip = GetLanIp();
+        var sel = CboAdapter.SelectedIndex >= 0 && CboAdapter.SelectedIndex < _adapterList.Count
+            ? _adapterList[CboAdapter.SelectedIndex] : null;
+        if (sel == null) return;
+        if (!sel.IsUp || sel.Ip == null)
+        {
+            AppendLog("当前网卡未连接，无可复制 IP，请选择已连接网卡");
+            return;
+        }
+        var ip = sel.Ip.Equals(IPAddress.Any) ? GetLanIp() : sel.Ip.ToString();
         try
         {
-            Clipboard.SetText(ip);
+            System.Windows.Clipboard.SetText(ip);
             AppendLog($"已复制 IP：{ip}（HTTP 端口 {TxtHttpPort.Text.Trim()} / SOCKS5 端口 {TxtSocksPort.Text.Trim()}）");
         }
         catch (Exception ex)
@@ -162,9 +243,16 @@ public partial class MainWindow : Window
             return;
         }
 
+        var ip = GetSelectedIp();
+        if (ip == null)
+        {
+            AppendLog("当前网卡未连接，无法监听，请选择已连接网卡或“自动”");
+            return;
+        }
+
         try
         {
-            _server.Start(GetSelectedIp(), httpPort, socksPort);
+            _server.Start(ip, httpPort, socksPort);
             BtnStart.IsEnabled = false;
             BtnStop.IsEnabled = true;
             TxtStatus.Text = $"运行中  {GetLanIp()}   HTTP:{httpPort}   SOCKS5:{socksPort}";
@@ -190,6 +278,73 @@ public partial class MainWindow : Window
     {
         if (LogPanel == null) return; // XAML 加载期间 IsChecked 初始化会提前触发
         LogPanel.Visibility = ChkLog.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void ChkTray_Toggled(object sender, RoutedEventArgs e)
+    {
+        // 勾选后立即显示托盘图标；取消勾选则隐藏
+        if (ChkTray.IsChecked == true)
+            EnsureTrayIcon();
+        else if (_notifyIcon != null)
+            _notifyIcon.Visible = false;
+    }
+
+    // ================= 托盘 =================
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (ChkTray.IsChecked == true && !_allowClose)
+        {
+            // 托盘模式：关闭主界面 -> 隐藏到托盘继续运行
+            e.Cancel = true;
+            EnsureTrayIcon();
+            Hide();
+            _notifyIcon?.ShowBalloonTip(1500, "LanProxy", "已最小化到托盘，双击图标恢复主界面", System.Windows.Forms.ToolTipIcon.Info);
+            return;
+        }
+        _notifyIcon?.Dispose();
+        _notifyIcon = null;
+        base.OnClosing(e);
+    }
+
+    private void EnsureTrayIcon()
+    {
+        if (_notifyIcon != null) { _notifyIcon.Visible = true; return; }
+        _notifyIcon = new System.Windows.Forms.NotifyIcon();
+        try
+        {
+            var sri = System.Windows.Application.GetResourceStream(new Uri("pack://application:,,,/app.ico"));
+            if (sri != null) _notifyIcon.Icon = new System.Drawing.Icon(sri.Stream);
+        }
+        catch
+        {
+            _notifyIcon.Icon = System.Drawing.SystemIcons.Application;
+        }
+        _notifyIcon.Text = "LanProxy 局域网代理服务器";
+        _notifyIcon.Visible = true;
+        _notifyIcon.DoubleClick += (_, _) => ShowMainWindow();
+
+        var menu = new System.Windows.Forms.ContextMenuStrip();
+        menu.Items.Add("显示主界面", null, (_, _) => ShowMainWindow());
+        menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+        menu.Items.Add("退出", null, (_, _) => ExitApp());
+        _notifyIcon.ContextMenuStrip = menu;
+    }
+
+    private void ShowMainWindow()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            Show();
+            WindowState = WindowState.Normal;
+            Activate();
+        });
+    }
+
+    private void ExitApp()
+    {
+        _allowClose = true;
+        Dispatcher.Invoke(Close);
     }
 
     // ================= 每秒刷新 =================
@@ -235,4 +390,13 @@ public partial class MainWindow : Window
             catch { }
         }
     }
+}
+
+/// <summary>网卡下拉项数据</summary>
+public class AdapterItem
+{
+    public string Display { get; set; } = "";
+    public string SubLine { get; set; } = "";
+    public IPAddress? Ip { get; set; }
+    public bool IsUp { get; set; }
 }

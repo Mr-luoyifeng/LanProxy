@@ -1,4 +1,4 @@
-﻿<Window x:Class="LanProxy.MainWindow"
+<Window x:Class="LanProxy.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:oxy="http://oxyplot.org/wpf"
@@ -24,13 +24,41 @@
                     <TextBlock Text="HTTP / SOCKS5 共享代理" FontSize="11" Foreground="#777" Margin="0,2,0,14"/>
 
                     <TextBlock Text="网卡 / 本机 IP" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                    <ComboBox x:Name="CboAdapter" Height="28"/>
+                    <ComboBox x:Name="CboAdapter" Height="30" VerticalContentAlignment="Center">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="0,1">
+                                    <TextBlock Text="{Binding Display}" FontWeight="SemiBold"/>
+                                    <TextBlock x:Name="SubText" Text="{Binding SubLine}" FontSize="11" Foreground="Gray"
+                                               Visibility="Collapsed"/>
+                                </StackPanel>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource FindAncestor, AncestorType=ComboBoxItem}}" Value="True">
+                                        <Setter TargetName="SubText" Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource FindAncestor, AncestorType=ComboBoxItem}}" Value="False">
+                                        <Setter TargetName="SubText" Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                        <ComboBox.ItemContainerStyle>
+                            <Style TargetType="ComboBoxItem">
+                                <Setter Property="Foreground" Value="Black"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsUp}" Value="False">
+                                        <Setter Property="Foreground" Value="Gray"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ComboBox.ItemContainerStyle>
+                    </ComboBox>
 
                     <TextBlock Text="HTTP 代理端口" FontWeight="SemiBold" Margin="0,12,0,4"/>
-                    <TextBox x:Name="TxtHttpPort" Text="8080" Height="26"/>
+                    <TextBox x:Name="TxtHttpPort" Text="8080" Height="26" VerticalContentAlignment="Center"/>
 
                     <TextBlock Text="SOCKS5 代理端口" FontWeight="SemiBold" Margin="0,12,0,4"/>
-                    <TextBox x:Name="TxtSocksPort" Text="1080" Height="26"/>
+                    <TextBox x:Name="TxtSocksPort" Text="1080" Height="26" VerticalContentAlignment="Center"/>
 
                     <Button x:Name="BtnCopy" Content="复制当前网卡 IP" Height="32" Margin="0,16,0,0" Click="BtnCopy_Click"/>
                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
@@ -38,10 +66,17 @@
                         <Button x:Name="BtnStop" Content="停止代理" Height="32" Width="100" IsEnabled="False" Click="BtnStop_Click"/>
                     </StackPanel>
 
-                    <CheckBox x:Name="ChkLog" Content="显示日志" IsChecked="True" Margin="0,14,0,0" Checked="ChkLog_Toggled" Unchecked="ChkLog_Toggled"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                        <CheckBox x:Name="ChkLog" Content="显示日志" IsChecked="True" Checked="ChkLog_Toggled" Unchecked="ChkLog_Toggled"/>
+                        <CheckBox x:Name="ChkTray" Content="托盘显示" Margin="14,0,0,0"
+                                  Checked="ChkTray_Toggled" Unchecked="ChkTray_Toggled"
+                                  ToolTip="勾选后立即在托盘区显示图标；点窗口关闭按钮，程序最小化到托盘继续运行，双击托盘图标恢复"/>
+                    </StackPanel>
 
                     <TextBlock Text="提示：启动前请确保 Windows 防火墙已放行上述端口，局域网设备才能接入。" 
-                               TextWrapping="Wrap" FontSize="11" Foreground="#999" Margin="0,18,0,0"/>
+                               TextWrapping="Wrap" FontSize="11" Foreground="#999" Margin="0,14,0,0"/>
+                    <TextBlock Text="勾选「托盘显示」后，点窗口关闭按钮，软件会在托盘区继续运行（不退出），双击托盘图标恢复界面。"
+                               TextWrapping="Wrap" FontSize="11" Foreground="#999" Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
 
