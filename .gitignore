@@ -1,0 +1,10 @@
+## Build artifacts
+bin/
+obj/
+publish/
+*.user
+
+## Outputs
+*.exe
+*.zip
+lanproxy-autostart.log
